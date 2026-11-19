@@ -18,12 +18,28 @@ def main():
     ap.add_argument("--noise", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--select", default="selfish", choices=["selfish", "random"])
+    ap.add_argument("--select", default="selfish", choices=["selfish", "random", "kind"])
+    ap.add_argument("--freeze", default="", help="動かない子。番号をカンマで（init のときはそのときの番号）。'auto:windward' = はじめにいちばん風上の子")
+    ap.add_argument("--init", default="", help="<名前>:<手> の形のマスから始める（例 f_n0:300）")
     ap.add_argument("--name", required=True)
     ap.add_argument("--fields", type=int, default=0, help="この手数ごとに風と温度の場も残す（0 = 残さない）")
     a = ap.parse_args()
 
     h = Huddle(a.n, pe=a.pe, noise=a.noise, seed=a.seed, select=a.select)
+    if a.init:
+        src, k = a.init.split(":")
+        h.sites = [tuple(int(v) for v in s) for s in np.load(Path(__file__).parent / "out" / f"{src}.npz")["sites"][int(k)]]
+        assert len(h.sites) == a.n
+    frozen = []
+    if a.freeze == "auto:windward":
+        xs, _ = h.xy()
+        frozen = [int(np.argmin(xs))]
+    elif a.freeze == "auto:center":
+        xs, ys = h.xy()
+        frozen = [int(np.argmin((xs - xs.mean()) ** 2 + (ys - ys.mean()) ** 2))]
+    elif a.freeze:
+        frozen = [int(v) for v in a.freeze.split(",")]
+    h.frozen = set(frozen)
     sites = np.zeros((a.steps + 1, a.n, 2), np.int32)
     qs = np.zeros((a.steps, a.n))
     movers = np.zeros(a.steps, np.int32)
@@ -44,7 +60,8 @@ def main():
     out = Path(__file__).parent / "out"
     out.mkdir(exist_ok=True)
     np.savez_compressed(out / f"{a.name}.npz", sites=sites, q=qs, movers=movers, q_amb=h.q_amb,
-                        n=a.n, pe=a.pe, noise=a.noise, seed=a.seed, select=a.select, **fields)
+                        n=a.n, pe=a.pe, noise=a.noise, seed=a.seed, select=a.select,
+                        frozen=np.array(frozen, np.int32), **fields)
     print("saved", out / f"{a.name}.npz")
 
 

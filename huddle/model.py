@@ -74,6 +74,10 @@ class Flow:
             for t in tris:
                 intri[list(t)] = True
             for a in np.nonzero(~intri)[0]:
+                # 群れからはぐれた子（となりが 1 羽もいない）は、1 羽だけのときと同じ円
+                if not np.any((np.abs(xs - xs[a]) ** 2 + (ys - ys[a]) ** 2 <= 1.01) & (np.arange(len(xs)) != a)):
+                    solid |= (X - xs[a]) ** 2 + (Y - ys[a]) ** 2 <= self.radius ** 2
+                    continue
                 for b in range(len(xs)):
                     if b == a or (xs[a] - xs[b]) ** 2 + (ys[a] - ys[b]) ** 2 > 1.01:
                         continue
@@ -184,9 +188,12 @@ class Flow:
 
 
 class Huddle:
-    def __init__(self, n, pe=10.0, noise=0.0, seed=0, flow: Flow | None = None, select="selfish"):
-        """select: "selfish" = 論文の規則 / "random" = 比べるため。ふちの子をでたらめに選び、でたらめな空いたマスへ"""
+    def __init__(self, n, pe=10.0, noise=0.0, seed=0, flow: Flow | None = None, select="selfish", frozen=()):
+        """select: "selfish" = 論文の規則 / "random" = 比べるため。ふちの子をでたらめに選び、でたらめな空いたマスへ
+                   "kind" = 比べるため（論文にない）。いちばん暖かいふちの子が、いちばん寒い子の風上側へ壁になりに行く
+        frozen: どんなに寒くても動かない子の番号（論文にない。「ずるい子」の実験）"""
         self.select = select
+        self.frozen = set(int(i) for i in frozen)
         self.rng = np.random.default_rng(seed)
         self.pe = pe
         self.noise = noise
@@ -246,8 +253,9 @@ class Huddle:
         q = res["q"]
         eff = q.copy()
         eff[b] += self.noise * self.q_amb * self.rng.uniform(-0.5, 0.5, len(b))
+        movable = [i for i in b if i not in self.frozen]
         if self.select == "random":
-            mover = b[self.rng.integers(len(b))]
+            mover = movable[self.rng.integers(len(movable))]
             old = self.sites[mover]
             occ = set(self.sites) - {old}
             cand = sorted({(qq + a, rr + bb) for qq, rr in occ for a, bb in DIRS} - occ - {old})
@@ -256,7 +264,9 @@ class Huddle:
             self.sites[mover] = new
             self.step_no += 1
             return {"mover": mover, "old": old, "new": new, "q": q, "field": res}
-        mover = max(b, key=lambda i: eff[i])
+        if self.select == "kind":
+            return self._kind_step(b, movable, eff, q, res)
+        mover = max(movable, key=lambda i: eff[i])
         old = self.sites[mover]
         occ = set(self.sites) - {old}
         rest = [i for i in b if i != mover]
@@ -277,3 +287,23 @@ class Huddle:
         self.sites[mover] = new
         self.step_no += 1
         return {"mover": mover, "old": old, "new": new, "q": q, "field": res}
+
+    def _kind_step(self, b, movable, eff, q, res):
+        """やさしい規則: いちばん暖かいふちの子が、いちばん寒い子のとなりの空いたマスのうち、いちばん風上（x が小さい）へ"""
+        cold = max(b, key=lambda i: eff[i])
+        order = sorted([i for i in movable if i != cold], key=lambda i: eff[i])
+        cq, cr = self.sites[cold]
+        for mover in order:
+            old = self.sites[mover]
+            occ = set(self.sites) - {old}
+            cand = [(cq + a, cr + bb) for a, bb in DIRS]
+            cand = [c for c in cand if c not in occ and c != old and self._nb(c, occ) >= 2 and self._intri(c, occ)]
+            if cand:
+                new = min(cand, key=lambda c: (axial_xy(*c)[0], -self._nb(c, occ)))
+                self.sites[mover] = new
+                self.step_no += 1
+                return {"mover": mover, "old": old, "new": new, "q": q, "field": res}
+        # 壁になれる場所がない: いちばん暖かい子はそのまま（手を進めるだけ）
+        self.step_no += 1
+        m = order[0]
+        return {"mover": m, "old": self.sites[m], "new": self.sites[m], "q": q, "field": res}
